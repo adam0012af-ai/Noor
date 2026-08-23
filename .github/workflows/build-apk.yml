@@ -1,1 +1,74 @@
+name: Build Noor APK
 
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Combine project parts
+        run: |
+          cat nour_offline_full_delivery.zip.part1 \
+              nour_offline_full_delivery.zip.part2 \
+              nour_offline_full_delivery.zip.part3 \
+              nour_offline_full_delivery.zip.part4 \
+              > nour_offline_full_delivery.zip
+
+      - name: Extract project
+        run: |
+          mkdir -p extracted
+          unzip -q nour_offline_full_delivery.zip -d extracted
+          echo "=== Extracted files ==="
+          find extracted -maxdepth 3 -type f | head -100
+
+      - name: Find Flutter project
+        id: flutter_project
+        run: |
+          PUBSPEC=$(find extracted -name pubspec.yaml -type f | head -1)
+
+          if [ -z "$PUBSPEC" ]; then
+            echo "ERROR: pubspec.yaml not found"
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$PUBSPEC")
+          echo "Flutter project: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Get dependencies
+        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: ${{ steps.flutter_project.outputs.project_dir }}
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Noor-APK
+          path: ${{ steps.flutter_project.outputs.project_dir }}/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
