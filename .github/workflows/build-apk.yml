@@ -1,4 +1,4 @@
-name: Build Signed Noor APK
+name: Build Noor 1.1 Signed APK
 
 on:
   workflow_dispatch:
@@ -11,34 +11,42 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ==============================
-      # 1. Combine the 4 ZIP parts
-      # ==============================
-      - name: Combine ZIP parts
+      # ==========================================
+      # 1. Combine Noor 1.1 parts
+      # ==========================================
+      - name: Combine Noor 1.1 ZIP parts
         shell: bash
         run: |
           set -e
 
-          cat nour_offline_full_delivery.zip.part1 \
-              nour_offline_full_delivery.zip.part2 \
-              nour_offline_full_delivery.zip.part3 \
-              nour_offline_full_delivery.zip.part4 \
-              > nour_offline_full_delivery.zip
+          echo "Combining Noor 1.1..."
 
-          unzip -t nour_offline_full_delivery.zip
-          ls -lh nour_offline_full_delivery.zip
+          cat nour_offline_v1.1.zip.part1 \
+              nour_offline_v1.1.zip.part2 \
+              nour_offline_v1.1.zip.part3 \
+              nour_offline_v1.1.zip.part4 \
+              > nour_offline_v1.1.zip
 
-      # ==============================
-      # 2. Extract project
-      # ==============================
-      - name: Extract project
+          echo "Combined ZIP:"
+          ls -lh nour_offline_v1.1.zip
+
+          echo "Testing ZIP..."
+          unzip -t nour_offline_v1.1.zip
+
+      # ==========================================
+      # 2. Extract
+      # ==========================================
+      - name: Extract Noor 1.1
+        shell: bash
         run: |
           mkdir -p extracted
-          unzip -q nour_offline_full_delivery.zip -d extracted
+          unzip -q nour_offline_v1.1.zip -d extracted
 
-      # ==============================
+          echo "Extracted successfully."
+
+      # ==========================================
       # 3. Find Flutter project
-      # ==============================
+      # ==========================================
       - name: Find Flutter project
         id: project
         shell: bash
@@ -46,41 +54,44 @@ jobs:
           PUBSPEC=$(find extracted -name pubspec.yaml -type f | head -1)
 
           if [ -z "$PUBSPEC" ]; then
-            echo "ERROR: pubspec.yaml not found"
+            echo "ERROR: pubspec.yaml not found."
             exit 1
           fi
 
           PROJECT_DIR=$(dirname "$PUBSPEC")
 
-          echo "Flutter project found:"
+          echo "Flutter project:"
           echo "$PROJECT_DIR"
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
-      # ==============================
-      # 4. Java
-      # ==============================
+      # ==========================================
+      # 4. Java 17
+      # ==========================================
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      # ==============================
+      # ==========================================
       # 5. Flutter
-      # ==============================
+      # ==========================================
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Flutter version
-        run: flutter --version
+      - name: Flutter information
+        run: |
+          flutter --version
+          flutter doctor -v
 
-      # ==============================
-      # 6. Fix Android desugaring
-      # ==============================
+      # ==========================================
+      # 6. Fix flutter_local_notifications
+      #    Core Library Desugaring
+      # ==========================================
       - name: Fix Android desugaring
         working-directory: ${{ steps.project.outputs.project_dir }}
         shell: bash
@@ -89,48 +100,72 @@ jobs:
           from pathlib import Path
           import re
 
-          files = [
+          candidates = [
               Path("android/app/build.gradle"),
               Path("android/app/build.gradle.kts")
           ]
 
-          gradle = next((x for x in files if x.exists()), None)
+          gradle = next((p for p in candidates if p.exists()), None)
 
           if gradle is None:
-              raise SystemExit("Android app Gradle file not found")
+              raise SystemExit(
+                  "ERROR: Android app Gradle file not found."
+              )
 
           text = gradle.read_text(encoding="utf-8")
 
-          print("Using:", gradle)
+          print("Patching:", gradle)
 
+          # ======================================
+          # Kotlin DSL
+          # ======================================
           if gradle.name.endswith(".kts"):
 
               if "isCoreLibraryDesugaringEnabled = true" not in text:
 
-                  m = re.search(r'compileOptions\s*\{', text)
+                  m = re.search(
+                      r'compileOptions\s*\{',
+                      text
+                  )
 
                   if m:
-                      p = m.end()
+                      pos = m.end()
+
                       text = (
-                          text[:p]
-                          + "\n        isCoreLibraryDesugaringEnabled = true"
-                          + text[p:]
+                          text[:pos]
+                          + "\n"
+                          + "        "
+                          + "isCoreLibraryDesugaringEnabled = true"
+                          + text[pos:]
                       )
+
                   else:
-                      m = re.search(r'android\s*\{', text)
+
+                      m = re.search(
+                          r'android\s*\{',
+                          text
+                      )
 
                       if not m:
-                          raise SystemExit("android block not found")
+                          raise SystemExit(
+                              "ERROR: android block not found."
+                          )
 
-                      p = m.end()
+                      pos = m.end()
 
-                      text = text[:p] + '''
+                      block = '''
               compileOptions {
                   isCoreLibraryDesugaringEnabled = true
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
               }
-              ''' + text[p:]
+              '''
+
+                      text = (
+                          text[:pos]
+                          + block
+                          + text[pos:]
+                      )
 
               if "coreLibraryDesugaring(" not in text:
 
@@ -139,112 +174,199 @@ jobs:
                       '"com.android.tools:desugar_jdk_libs:2.1.4")'
                   )
 
-                  m = re.search(r'dependencies\s*\{', text)
+                  m = re.search(
+                      r'dependencies\s*\{',
+                      text
+                  )
 
                   if m:
-                      p = m.end()
-                      text = text[:p] + "\n    " + dep + text[p:]
-                  else:
-                      text += "\n\ndependencies {\n    " + dep + "\n}\n"
+                      pos = m.end()
 
-          else:
-
-              if (
-                  "coreLibraryDesugaringEnabled true" not in text
-                  and "coreLibraryDesugaringEnabled = true" not in text
-              ):
-
-                  m = re.search(r'compileOptions\s*\{', text)
-
-                  if m:
-                      p = m.end()
                       text = (
-                          text[:p]
-                          + "\n        coreLibraryDesugaringEnabled true"
-                          + text[p:]
+                          text[:pos]
+                          + "\n    "
+                          + dep
+                          + text[pos:]
                       )
 
                   else:
-                      m = re.search(r'android\s*\{', text)
+                      text += (
+                          "\n\ndependencies {\n"
+                          "    "
+                          + dep
+                          + "\n}\n"
+                      )
+
+          # ======================================
+          # Groovy DSL
+          # ======================================
+          else:
+
+              enabled = (
+                  "coreLibraryDesugaringEnabled true" in text
+                  or
+                  "coreLibraryDesugaringEnabled = true" in text
+              )
+
+              if not enabled:
+
+                  m = re.search(
+                      r'compileOptions\s*\{',
+                      text
+                  )
+
+                  if m:
+
+                      pos = m.end()
+
+                      text = (
+                          text[:pos]
+                          + "\n"
+                          + "        "
+                          + "coreLibraryDesugaringEnabled true"
+                          + text[pos:]
+                      )
+
+                  else:
+
+                      m = re.search(
+                          r'android\s*\{',
+                          text
+                      )
 
                       if not m:
-                          raise SystemExit("android block not found")
+                          raise SystemExit(
+                              "ERROR: android block not found."
+                          )
 
-                      p = m.end()
+                      pos = m.end()
 
-                      text = text[:p] + '''
+                      block = '''
               compileOptions {
                   coreLibraryDesugaringEnabled true
                   sourceCompatibility JavaVersion.VERSION_17
                   targetCompatibility JavaVersion.VERSION_17
               }
-              ''' + text[p:]
+              '''
 
-              if not re.search(
+                      text = (
+                          text[:pos]
+                          + block
+                          + text[pos:]
+                      )
+
+              existing_dep = re.search(
                   r'^\s*coreLibraryDesugaring\s+[\'"]',
                   text,
                   flags=re.MULTILINE
-              ):
+              )
+
+              if not existing_dep:
 
                   dep = (
                       "coreLibraryDesugaring "
-                      "'com.android.tools:desugar_jdk_libs:2.1.4'"
+                      "'com.android.tools:"
+                      "desugar_jdk_libs:2.1.4'"
                   )
 
-                  m = re.search(r'dependencies\s*\{', text)
+                  m = re.search(
+                      r'dependencies\s*\{',
+                      text
+                  )
 
                   if m:
-                      p = m.end()
-                      text = text[:p] + "\n    " + dep + text[p:]
+
+                      pos = m.end()
+
+                      text = (
+                          text[:pos]
+                          + "\n    "
+                          + dep
+                          + text[pos:]
+                      )
+
                   else:
-                      text += "\n\ndependencies {\n    " + dep + "\n}\n"
 
-          gradle.write_text(text, encoding="utf-8")
+                      text += (
+                          "\n\ndependencies {\n"
+                          "    "
+                          + dep
+                          + "\n}\n"
+                      )
 
-          print("Desugaring patch completed.")
+          gradle.write_text(
+              text,
+              encoding="utf-8"
+          )
+
+          print(
+              "Android desugaring patch completed."
+          )
           PY
 
-      # ==============================
+      # ==========================================
       # 7. Dependencies
-      # ==============================
-      - name: Flutter dependencies
+      # ==========================================
+      - name: Install Flutter dependencies
         working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
           flutter clean
           flutter pub get
 
-      # ==============================
-      # 8. Build APK
-      # ==============================
-      - name: Build APK
+      # ==========================================
+      # 8. Analyze project
+      # Does not stop build on warnings
+      # ==========================================
+      - name: Flutter analyze
         working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
+        continue-on-error: true
+        run: |
+          flutter analyze
+
+      # ==========================================
+      # 9. Build release APK
+      # ==========================================
+      - name: Build Noor 1.1 APK
+        working-directory: ${{ steps.project.outputs.project_dir }}
+        shell: bash
         run: |
           flutter build apk --release
 
-      # ==============================
-      # 9. Find Android SDK build tools
-      # ==============================
+      # ==========================================
+      # 10. Locate Android build tools
+      # ==========================================
       - name: Find Android build tools
         id: android_tools
         shell: bash
         run: |
-          BUILD_TOOLS=$(find "$ANDROID_SDK_ROOT/build-tools" \
-            -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          BUILD_TOOLS=$(
+            find "$ANDROID_SDK_ROOT/build-tools" \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              | sort -V \
+              | tail -1
+          )
 
-          echo "Build tools: $BUILD_TOOLS"
+          echo "Android Build Tools:"
+          echo "$BUILD_TOOLS"
 
           test -x "$BUILD_TOOLS/apksigner"
           test -x "$BUILD_TOOLS/zipalign"
 
-          echo "path=$BUILD_TOOLS" >> "$GITHUB_OUTPUT"
+          echo "path=$BUILD_TOOLS" \
+            >> "$GITHUB_OUTPUT"
 
-      # ==============================
-      # 10. Create signing key
-      # ==============================
-      - name: Create release signing key
+      # ==========================================
+      # 11. Create signing key
+      # ==========================================
+      - name: Create Noor signing key
         shell: bash
         run: |
-          keytool -genkeypair \
+          keytool \
+            -genkeypair \
             -v \
             -keystore "$RUNNER_TEMP/noor-release.jks" \
             -storepass "NoorBuild2026" \
@@ -253,12 +375,14 @@ jobs:
             -keyalg RSA \
             -keysize 2048 \
             -validity 10000 \
-            -dname "CN=Noor, OU=Mobile, O=Noor, L=Cairo, ST=Cairo, C=EG"
+            -dname \
+            "CN=Noor, OU=Mobile, O=Noor, L=Cairo, ST=Cairo, C=EG"
 
-      # ==============================
-      # 11. Prepare APK
-      # ==============================
-      - name: Zipalign APK
+      # ==========================================
+      # 12. Find APK
+      # ==========================================
+      - name: Find generated APK
+        id: apk
         shell: bash
         run: |
           PROJECT="${{ steps.project.outputs.project_dir }}"
@@ -266,65 +390,83 @@ jobs:
           APK="$PROJECT/build/app/outputs/flutter-apk/app-release.apk"
 
           if [ ! -f "$APK" ]; then
-            echo "APK not found:"
-            find "$PROJECT/build" -name "*.apk" -print || true
+            echo "ERROR: app-release.apk not found."
+
+            find "$PROJECT/build" \
+              -type f \
+              -name "*.apk" \
+              -print || true
+
             exit 1
           fi
 
+          echo "APK found:"
+          ls -lh "$APK"
+
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+
+      # ==========================================
+      # 13. Zipalign
+      # ==========================================
+      - name: Zipalign Noor APK
+        shell: bash
+        run: |
           "${{ steps.android_tools.outputs.path }}/zipalign" \
             -f \
             -v \
             4 \
-            "$APK" \
-            "$RUNNER_TEMP/Noor-aligned.apk"
+            "${{ steps.apk.outputs.apk }}" \
+            "$RUNNER_TEMP/Noor-1.1-aligned.apk"
 
-      # ==============================
-      # 12. Sign APK
-      # ==============================
-      - name: Sign APK
+      # ==========================================
+      # 14. Sign
+      # ==========================================
+      - name: Sign Noor 1.1 APK
         shell: bash
         run: |
-          "${{ steps.android_tools.outputs.path }}/apksigner" sign \
+          "${{ steps.android_tools.outputs.path }}/apksigner" \
+            sign \
             --ks "$RUNNER_TEMP/noor-release.jks" \
             --ks-key-alias noor \
             --ks-pass pass:NoorBuild2026 \
             --key-pass pass:NoorBuild2026 \
-            --out "$RUNNER_TEMP/Noor.apk" \
-            "$RUNNER_TEMP/Noor-aligned.apk"
+            --out "$RUNNER_TEMP/Noor-1.1.apk" \
+            "$RUNNER_TEMP/Noor-1.1-aligned.apk"
 
-      # ==============================
-      # 13. Verify signature
-      # ==============================
+      # ==========================================
+      # 15. Verify APK signature
+      # ==========================================
       - name: Verify APK signature
         shell: bash
         run: |
-          echo "Checking APK signature..."
-
           "${{ steps.android_tools.outputs.path }}/apksigner" \
             verify \
             --verbose \
             --print-certs \
-            "$RUNNER_TEMP/Noor.apk"
+            "$RUNNER_TEMP/Noor-1.1.apk"
 
-          echo "APK signature verified successfully."
-
-      # ==============================
-      # 14. Verify ZIP/APK integrity
-      # ==============================
+      # ==========================================
+      # 16. Verify APK integrity
+      # ==========================================
       - name: Verify APK integrity
         shell: bash
         run: |
-          unzip -t "$RUNNER_TEMP/Noor.apk"
+          unzip -t "$RUNNER_TEMP/Noor-1.1.apk"
 
-          ls -lh "$RUNNER_TEMP/Noor.apk"
+          echo ""
+          echo "=============================="
+          echo "NOOR 1.1 APK READY"
+          echo "=============================="
 
-      # ==============================
-      # 15. Upload final APK
-      # ==============================
-      - name: Upload signed Noor APK
+          ls -lh "$RUNNER_TEMP/Noor-1.1.apk"
+
+      # ==========================================
+      # 17. Upload final APK
+      # ==========================================
+      - name: Upload Noor 1.1 APK
         uses: actions/upload-artifact@v4
         with:
-          name: Noor-Signed-APK
-          path: ${{ runner.temp }}/Noor.apk
+          name: Noor-1.1-Signed-APK
+          path: ${{ runner.temp }}/Noor-1.1.apk
           if-no-files-found: error
           retention-days: 30
